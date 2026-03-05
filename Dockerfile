@@ -1,14 +1,16 @@
 # 基础镜像
 FROM ubuntu:22.04
 
-# 核心环境变量（解决交互式安装、时区等问题）
+# 环境变量
 ENV DEBIAN_FRONTEND=noninteractive
-ENV NVM_DIR="/root/.nvm"
-ENV TZ=Asia/Shanghai \
-    SSH_USER=ubuntu
-# ENV ROOT_PASSWORD=your_secure_password  # 1. 新增：定义root密码环境变量（建议后续用secret管理）
-# 注意：这个敏感信息建议用secret管理，仅保留适配你的原有配置
+ENV TZ=Asia/Shanghai
+ENV NVM_DIR=/root/.nvm
+ENV SSH_USER=ubuntu
 
+# 解决 Kaniko / rootless apt sandbox 问题
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/no-sandbox
+
+# 复制文件
 COPY entrypoint.sh /entrypoint.sh
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY reboot.sh /usr/local/sbin/reboot
@@ -22,39 +24,71 @@ COPY agent /agent
 COPY start.sh /start.sh
 COPY index.html /index.html
 
-# 安装所有基础依赖（整合你日志里的所有依赖）
-RUN apt-get update; \
-    apt-get install -y tzdata openssh-server sudo curl ca-certificates wget vim net-tools supervisor cron unzip iputils-ping telnet git iproute2 nano python3.10 pip --no-install-recommends; \
-    apt-get clean; \
-    npm install; \
-    pip install -r requirements.txt; \    
-    rm -rf /var/lib/apt/lists/*; \
-    mkdir /var/run/sshd; \
-    chmod +x /entrypoint.sh; \
-    chmod +x /usr/local/sbin/reboot; \
-    chmod +x index.js; \
-    chmod +x app.py; \
-    chmod +x app.js; \
-    chmod +x app.sh; \
-    chmod +x agent; \
-    chmod +x start.sh; \
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime; \
-    echo $TZ > /etc/timezone; 
-    
-# 安装nvm + Node.js 24.13.0（核心：无任何嵌套shell，全程在同一个shell执行）
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash;  \
-    . "$NVM_DIR/nvm.sh" ;  \
-    nvm install 24.13.0 ;  \
-    nvm alias default 24.13.0 ;  \
-    node -v && npm -v ;  \
-    nvm cache clear
-# 全局配置PATH（关键：确保容器内所有进程都能找到node/npm）
-ENV PATH="$NVM_DIR/versions/node/v24.13.0/bin:$PATH"
-# 二次验证：确保全局PATH生效（非必需，但能提前发现问题）
+# 安装基础依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    openssh-server \
+    sudo \
+    curl \
+    ca-certificates \
+    wget \
+    vim \
+    net-tools \
+    supervisor \
+    cron \
+    unzip \
+    iputils-ping \
+    telnet \
+    git \
+    iproute2 \
+    nano \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 配置时区
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+ && echo $TZ > /etc/timezone
+
+# 创建 sshd 目录
+RUN mkdir -p /run/sshd
+
+# 设置执行权限
+RUN chmod +x /entrypoint.sh \
+ && chmod +x /usr/local/sbin/reboot \
+ && chmod +x /index.js \
+ && chmod +x /app.js \
+ && chmod +x /app.py \
+ && chmod +x /app.sh \
+ && chmod +x /agent \
+ && chmod +x /start.sh
+
+# 安装 nvm + Node.js
+RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+ && . "$NVM_DIR/nvm.sh" \
+ && nvm install 24.13.0 \
+ && nvm alias default 24.13.0 \
+ && nvm use default \
+ && node -v \
+ && npm -v
+
+# 让 node/npm 在所有 shell 中可用
+ENV PATH=$NVM_DIR/versions/node/v24.13.0/bin:$PATH
+
+# 安装 node 依赖
+RUN npm install
+
+# 安装 python 依赖
+RUN pip3 install --no-cache-dir -r /requirements.txt
+
+# 再次验证 node/npm
 RUN node -v && npm -v
 
-EXPOSE 22/tcp
+# 暴露端口
+EXPOSE 22
+
+# 启动入口
 ENTRYPOINT ["/entrypoint.sh"]
 
-# 容器启动命令
-CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
+# 启动 supervisor
+CMD ["/usr/bin/supervisord","-n","-c","/etc/supervisor/supervisord.conf"]
