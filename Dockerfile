@@ -20,6 +20,7 @@ COPY app.sh /app.sh
 COPY requirements.txt /requirements.txt
 COPY agent /agent
 COPY start.sh /start.sh
+COPY index.html /index.html
 
 # 安装所有基础依赖（整合你日志里的所有依赖）
 RUN apt-get update; \
