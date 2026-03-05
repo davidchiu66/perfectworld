@@ -1,94 +1,98 @@
-# 基础镜像
-FROM ubuntu:22.04
+############################
+# Stage 1: builder
+############################
+FROM ubuntu:22.04 AS builder
 
-# 环境变量
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Shanghai
-ENV NVM_DIR=/root/.nvm
-ENV SSH_USER=ubuntu
+ENV NODE_VERSION=24.13.0
 
-# 解决 Kaniko / rootless apt sandbox 问题
+# 解决 Kaniko apt sandbox 问题
 RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/no-sandbox
 
-# 复制文件
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    xz-utils \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Node.js
+RUN ARCH=$(dpkg --print-architecture) \
+ && if [ "$ARCH" = "amd64" ]; then ARCH="x64"; fi \
+ && curl -fsSL https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH.tar.xz -o node.tar.xz \
+ && tar -xJf node.tar.xz -C /usr/local --strip-components=1 \
+ && rm node.tar.xz
+
+WORKDIR /build
+
+COPY package.json /build/package.json
+
+RUN npm install --production
+
+COPY requirements.txt /build/requirements.txt
+
+RUN pip3 install --no-cache-dir -r requirements.txt --prefix=/python
+
+############################
+# Stage 2: runtime
+############################
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+ENV SSH_USER=ubuntu
+
+# 解决 Kaniko apt sandbox 问题
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/no-sandbox
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    openssh-server \
+    sudo \
+    supervisor \
+    curl \
+    ca-certificates \
+    python3 \
+    iputils-ping \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# 时区
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# SSH
+RUN mkdir -p /run/sshd
+
+# Node runtime
+COPY --from=builder /usr/local /usr/local
+
+# npm modules
+COPY --from=builder /build/node_modules /node_modules
+
+# python modules
+COPY --from=builder /python /usr/local
+
+# 应用文件
 COPY entrypoint.sh /entrypoint.sh
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY reboot.sh /usr/local/sbin/reboot
 COPY index.js /index.js
 COPY app.js /app.js
-COPY package.json /package.json
 COPY app.py /app.py
 COPY app.sh /app.sh
-COPY requirements.txt /requirements.txt
 COPY agent /agent
 COPY start.sh /start.sh
 COPY index.html /index.html
 
-# 安装基础依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tzdata \
-    openssh-server \
-    sudo \
-    curl \
-    ca-certificates \
-    wget \
-    vim \
-    net-tools \
-    supervisor \
-    cron \
-    unzip \
-    iputils-ping \
-    telnet \
-    git \
-    iproute2 \
-    nano \
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# 配置时区
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
- && echo $TZ > /etc/timezone
-
-# 创建 sshd 目录
-RUN mkdir -p /run/sshd
-
-# 设置执行权限
 RUN chmod +x /entrypoint.sh \
  && chmod +x /usr/local/sbin/reboot \
- && chmod +x /index.js \
- && chmod +x /app.js \
- && chmod +x /app.py \
- && chmod +x /app.sh \
  && chmod +x /agent \
  && chmod +x /start.sh
 
-# 安装 nvm + Node.js
-RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
- && . "$NVM_DIR/nvm.sh" \
- && nvm install 24.13.0 \
- && nvm alias default 24.13.0 \
- && nvm use default \
- && node -v \
- && npm -v
-
-# 让 node/npm 在所有 shell 中可用
-ENV PATH=$NVM_DIR/versions/node/v24.13.0/bin:$PATH
-
-# 安装 node 依赖
-RUN npm install
-
-# 安装 python 依赖
-RUN pip3 install --no-cache-dir -r /requirements.txt
-
-# 再次验证 node/npm
-RUN node -v && npm -v
-
-# 暴露端口
 EXPOSE 22
 
-# 启动入口
 ENTRYPOINT ["/entrypoint.sh"]
 
-# 启动 supervisor
-CMD ["/usr/bin/supervisord","-n","-c","/etc/supervisor/supervisord.conf"]
+CMD ["/usr/bin/supervisord","-n"]
